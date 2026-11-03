@@ -76,13 +76,16 @@ func DesktopInferenceModels() (list []map[string]any, ok bool) {
 		entry := map[string]any{"name": name}
 		if long {
 			entry["supports1m"], entry["prefer1m"] = true, true
-			// Desktop names it by the id it looks up (name), which
-			// /v1/models lists with "[1m]": the label it had there
-			if DesktopNumber(e) == "" {
-				entry["labelOverride"] = m["display_name"]
-			}
 		} else if e.Context >= desktop1M {
 			entry["supports1m"] = true
+		}
+		// Desktop names it by the id it looks up (name), which /v1/models
+		// lists with "[1m]": the label it had there (#5025: a model whose
+		// id has no "[1m]" was left its bare alias, named by nothing in a
+		// list that replaces /v1/models). An id Desktop names after its
+		// own catalog (DesktopNumber) keeps that naming.
+		if DesktopNumber(e) == "" {
+			entry["labelOverride"] = m["display_name"]
 		}
 		if t := tierOf[e.ID]; t != "" {
 			tagged = true
