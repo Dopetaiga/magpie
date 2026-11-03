@@ -871,8 +871,10 @@ func FallbackModels(p Provider) []Member {
 // a vendor spells it ("grok-4.7" is the group grok-4-7 or auto-grok-4-7).
 // A request for the model is the group's then, as it would be for the
 // group's own id; failing those, the group whose name it is (groupNamed);
-// ok is false when no group has it. An id with a provider
-// in it ("a/m") names that provider's model, never a group.
+// ok is false when no group has it. A group switched off is none (#5017):
+// the bare id is the model a provider serves by it, as a removed group's
+// is. An id with a provider in it ("a/m") names that provider's model,
+// never a group.
 func GroupFor(id string) (string, bool) {
 	id = strings.TrimSuffix(strings.TrimSpace(id), "[1m]")
 	if id == "" || strings.Contains(id, "/") {
@@ -885,7 +887,7 @@ func GroupFor(id string) (string, bool) {
 func groupForIn(all []Group, id string) (string, bool) {
 	k := Slug(sameModel(id))
 	for _, gid := range []string{strings.ToLower(id), k, "auto-" + k} {
-		if g, ok := groupOf(all, gid); ok {
+		if g, ok := groupOf(all, gid); ok && !g.Disabled {
 			return GroupPrefix + g.ID, true
 		}
 	}
@@ -1850,10 +1852,17 @@ func PickGroup(id, pick string) error {
 }
 
 // DisabledGroup is the group of the user's a model id names ("group/<id>",
-// or a model's as GroupFor takes it) when it is switched off.
+// or a model's as GroupFor takes it) when it is switched off. GroupFor
+// passes a switched-off group over (#5017), so the bare id is looked up as
+// itself first: the gateway asks here once the model has failed to
+// resolve, and what only the switched-off group answered is said so, not
+// unknown.
 func DisabledGroup(id string) (Group, bool) {
 	gid, ok := GroupIDOf(id)
 	if !ok {
+		if g, ok := groupOf(sharedGroups(), strings.ToLower(strings.TrimSuffix(strings.TrimSpace(id), "[1m]"))); ok && g.Disabled {
+			return cloneGroups([]Group{g})[0], true
+		}
 		if gid, ok = GroupFor(id); !ok {
 			return Group{}, false
 		}
