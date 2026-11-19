@@ -130,6 +130,7 @@ func tailOf(from provider.Protocol, body []byte) []byte {
 type toolLoop struct {
 	calls []Part // the turn's calls, for the notice to name
 	turns int
+	shown string // the turn's results, cut short, for the notice too (#7099)
 }
 
 // toolLoopOf is the loop msgs end in, when their last toolLoopRepeats
@@ -150,7 +151,7 @@ func toolLoopOf(msgs []Message) (toolLoop, bool) {
 	if n < toolLoopRepeats {
 		return toolLoop{}, false
 	}
-	return toolLoop{calls: last.calls, turns: n}, true
+	return toolLoop{calls: last.calls, turns: n, shown: last.shown}, true
 }
 
 // A call made to wait (clock__sleep {"duration_ms":60000} while CI runs)
@@ -225,9 +226,11 @@ func isWait(c Part) bool {
 
 // exchange is one turn of tool use: the assistant's calls and the results
 // the agent sent back, summed without their ids, which differ every turn.
+// shown is the results as the notice names them, cut short (#7099).
 type exchange struct {
 	sum   uint64
 	calls []Part
+	shown string
 }
 
 // exchanges are the turns of tool use msgs end in, oldest first, back to
@@ -291,10 +294,13 @@ func exchangeOf(asked, said []Part) (exchange, bool) {
 		return exchange{}, false
 	}
 	keys := make([]string, 0, len(calls)+1)
+	shown := make([]string, 0, len(calls))
 	for _, c := range calls {
 		got := results[c.ID]
 		delete(results, c.ID)
-		keys = append(keys, c.Name+"\x00"+steadyArgs(c.Args)+"\x00"+strings.Join(got, "\x01"))
+		joined := strings.Join(got, "\x01")
+		keys = append(keys, c.Name+"\x00"+steadyArgs(c.Args)+"\x00"+joined)
+		shown = append(shown, resultShown(c.Name, joined))
 	}
 	for _, got := range results { // results of no call here
 		keys = append(keys, "\x00\x00"+strings.Join(got, "\x01"))
@@ -309,7 +315,22 @@ func exchangeOf(asked, said []Part) (exchange, bool) {
 		h.Write([]byte(k))
 		h.Write([]byte{0xfe})
 	}
-	return exchange{sum: h.Sum64(), calls: calls}, true
+	return exchange{sum: h.Sum64(), calls: calls, shown: strings.Join(shown, "; ")}, true
+}
+
+// resultShown is one call's result as the notice names it: its error
+// mark, its text as resultSum normalized it, cut short (#7099).
+func resultShown(name, got string) string {
+	if e, ok := strings.CutPrefix(got, "error\x00"); ok {
+		got = "[error] " + e
+	}
+	if r := []rune(name); len(r) > 60 {
+		name = string(r[:60]) + "…"
+	}
+	if r := []rune(got); len(r) > 200 {
+		got = string(r[:200]) + "…"
+	}
+	return name + ": " + got
 }
 
 // steadyArgs is a call's arguments with their keys in one order, as two
@@ -379,7 +400,7 @@ func (l toolLoop) called() string {
 
 // why is what the Routing, Usage and Sessions views say of the turn.
 func (l toolLoop) why() string {
-	return fmt.Sprintf("tool loop: the same tool call got the same result %d turns in a row (%s); answered by magpie, sent nowhere", l.turns, l.called())
+	return fmt.Sprintf("tool loop: the same tool call got the same result %d turns in a row (%s); answered by magpie, sent nowhere", l.turns, l.named())
 }
 
 // notice is what the agent shows the user, as the turn's answer, in lang
@@ -392,11 +413,17 @@ func (l toolLoop) notice(lang string) string {
 	if !ok {
 		f = toolLoopNotices[langEN]
 	}
-	return fmt.Sprintf(f, l.turns, l.called())
+	return fmt.Sprintf(f, l.turns, l.named())
 }
 
-// toolLoopNotices are the notice in each language, given the turns and
-// the calls.
+// named is the calls and, beside them, the result each got, as the why
+// and the notice name the exchange (#7099).
+func (l toolLoop) named() string {
+	return l.called() + "; " + l.shown
+}
+
+// toolLoopNotices are the notice in each language, given the turns, the
+// calls and the results.
 var toolLoopNotices = map[string]string{
 	langEN:   "This turn was stopped before it reached the model: the agent ran the same tool call %d times in a row and got the same result every time (%s). The model is stuck repeating it, and each further turn would be one more request with no progress, so this turn was sent nowhere. Tell the agent how to go on and the conversation continues; Settings › Models › Replies › Stop looping replies turns this check off.",
 	langZH:   "这一轮在发给模型之前已被停止：Agent 连续 %d 次调用了同一个工具，每次得到的结果都一样（%s）。模型陷入了重复，再继续每一轮都只是多一次请求而没有进展，所以这一轮没有发出。告诉 Agent 接下来怎么做，对话就会继续；在 设置 › 模型 › 回复 › 停止循环的回复 中可以关闭这项检查。",

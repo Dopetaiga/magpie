@@ -186,6 +186,37 @@ func TestToolLoopIsStoppedOnEveryProtocol(t *testing.T) {
 	}
 }
 
+// The reporter's #7099: the identical results were the client refusing
+// the call every time, not a model that read the same file again. The
+// notice and the ledger's why name what that result was, beside the
+// calls, so a run of rejections reads as one.
+func TestToolLoopNoticeNamesTheResult(t *testing.T) {
+	x := toolLoopAsks[0]
+	v := &countingVendor{}
+	gw := toolLoopOn(t, v)
+	reject := func(int) (string, string) {
+		return `{"cmd":"git status --short"}`, "unsupported custom tool call: exec"
+	}
+	got := askAgent(t, gw+x.path, toolTurns(x.from, 30, reject, x.stream))
+	if !strings.Contains(got, "This turn was stopped") || !strings.Contains(got, "git status --short") {
+		t.Fatalf("the loop wasn't stopped in its API:\n%s", got)
+	}
+	if !strings.Contains(got, "unsupported custom tool call: exec") {
+		t.Fatalf("the notice names the calls but not the result that made it a loop:\n%s", got)
+	}
+	var rec usage.Record
+	for range 50 {
+		if recs := usage.Load(time.Time{}); len(recs) > 0 {
+			rec = recs[len(recs)-1]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if rec.Provider != "magpie" || !rec.Rejected || !strings.Contains(rec.Error, "unsupported custom tool call: exec") {
+		t.Fatalf("usage record %+v", rec)
+	}
+}
+
 // Codex on its own sign-in, a turn relayed to the ChatGPT backend as it
 // came, is stopped the same: its loop spends the user's ChatGPT plan.
 func TestToolLoopStoppedOnCodexsOwnSignIn(t *testing.T) {
