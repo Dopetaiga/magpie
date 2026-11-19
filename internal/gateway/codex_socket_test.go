@@ -258,6 +258,47 @@ func TestCodexSocketRefusedGoesOverHTTP(t *testing.T) {
 	}
 }
 
+// A dial that never became an HTTP answer, a proxy's transient EOF, is a
+// fault of the network, not the host: the next turn tries the socket
+// again, rather than reading the host as one that refused its handshake
+// and speaking HTTP to it for codexSocketShun (#7156).
+func TestCodexSocketDialErrorDoesNotShun(t *testing.T) {
+	socketOn(t)
+	f := &fakeSocketBackend{}
+	chatgpt(t, f.ServeHTTP)
+	var handshakes atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") != "" {
+			handshakes.Add(1)
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				http.Error(w, "no hijack here", http.StatusInternalServerError)
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err == nil {
+				conn.Close() // no HTTP answer at all: the transport error
+			}
+			return
+		}
+		f.ServeHTTP(w, r)
+	}))
+	t.Cleanup(up.Close)
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = was })
+
+	for i := range 2 {
+		code, body := codexPost(t, `{"model":"gpt-5.5","stream":true,"input":"ping"}`)
+		if code != 200 || !strings.Contains(body, `"delta":"po"`) {
+			t.Fatalf("turn %d: %d %s", i, code, body)
+		}
+	}
+	if posts, _ := f.counts(); posts != 2 || handshakes.Load() != 2 {
+		t.Fatalf("%d posts, %d handshakes; want 2 posts and a dial tried on both turns", posts, handshakes.Load())
+	}
+}
+
 // An error the backend says on the socket before the reply is the status
 // it would have answered over HTTP: a used-up account (429) rests and the
 // turn goes on to the next account, whose turn goes over the socket too.

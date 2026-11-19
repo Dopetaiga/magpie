@@ -421,7 +421,10 @@ func (t codexSocket) socket(req *http.Request, msg []byte, key string, shape *co
 		case !shun:
 			// tried again next turn
 		case hs == nil:
-			shunCodexSocket(u.Host, err.Error())
+			// a dial that never became an HTTP answer, a proxy's
+			// transient EOF, is a fault of the network, not the host:
+			// it is tried again next turn, not read as a handshake the
+			// host refused (#7156)
 		case hs.StatusCode == http.StatusUnauthorized || hs.StatusCode == http.StatusTooManyRequests ||
 			hs.StatusCode >= 500:
 			// the account's or a passing fault: HTTP says it as it is
