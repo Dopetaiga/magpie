@@ -129,3 +129,28 @@ func TestSingleProviderWaitsOutAFrequencyLimit(t *testing.T) {
 		t.Errorf("tries %+v: want the first asked again as a rate limit after its 2s", r.Tries)
 	}
 }
+
+// The reporter's #7274: OpenAI's TPM 429 advises "adding a payment
+// method", which the credit words match, and that advice read the limit
+// as an account without money — no same-one retry, no patience, the
+// request ended on a limit back within seconds. The rate limit's own
+// words win; the billing advice is for the human.
+const tpmWithPaymentAdvice = "Rate limit reached for gpt-6.2-sol in organization org-xxx on tokens per min (TPM): Limit 1000000, Used 736214, Requested 401420. Please try again in 8.259s. Visit https://platform.openai.com/account/rate-limits to learn more. You can increase your rate limit by adding a payment method to your account at https://platform.openai.com/account/billing."
+
+func TestTPMWithPaymentAdviceIsARateLimit(t *testing.T) {
+	body := []byte(`{"message":"` + tpmWithPaymentAdvice + `","type":"tokens","param":"","code":""}`)
+	if got := failure(429, body); got != failRate {
+		t.Fatalf("failure %s", got)
+	}
+	if !busy(429, body) {
+		t.Error("a TPM limit with billing advice isn't busy")
+	}
+	if wait, ok := passing(429, http.Header{}, body, 0); !ok || wait <= 0 {
+		t.Errorf("passing %v %v, want asked again", wait, ok)
+	}
+	// the money truly spent stays spent, however its body words a window
+	spent := []byte(`{"error":{"code":"credit_balance_exhausted","message":"Credits exhausted. Requested 40000 above your TPM limit."}}`)
+	if busy(429, spent) {
+		t.Error("a credit-exhausted 429 with a rate word in it is busy")
+	}
+}

@@ -2381,8 +2381,14 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 	case status == 429:
 		// a relay's 429 often says nothing of when (#503: "负载已饱和，请稍
 		// 后再试"); a plan used up or no money left won't clear in seconds,
-		// nor an account's token wall (walled)
-		return wait, again < rateRetries && failure(status, body) == failRate && !creditWords.Match(wordsOf(body)) && !walled(body)
+		// nor an account's token wall (walled). A rate limit the body's own
+		// words name (a minute's window, TPM, RPM) clears in seconds, its
+		// billing advice notwithstanding (#7274); the money truly spent
+		// does not
+		w := wordsOf(body)
+		return wait, again < rateRetries && failure(status, body) == failRate &&
+			(!creditWords.Match(w) || minuteWords.Match(w) && !brokeWords.Match(w)) &&
+			!walled(body)
 	case regionRefused(status, wordsOf(body)):
 		// refused at the edge the connection reached, which a new
 		// connection a moment later may not be (#5182: answered 12s on);

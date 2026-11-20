@@ -74,7 +74,13 @@ func busy(status int, body []byte) bool {
 			!bodyHas(body, cutVoidWords) &&
 			!queued(body)
 	case status == 429:
-		return failure(status, body) == failRate && !creditWords.Match(wordsOf(body)) && !walled(body)
+		// a rate limit the body's own words name (a minute's window, TPM,
+		// RPM) is one a moment mends, though its billing advice matches
+		// the credit words (#7274); the money truly spent is not
+		w := wordsOf(body)
+		return failure(status, body) == failRate &&
+			(!creditWords.Match(w) || minuteWords.Match(w) && !brokeWords.Match(w)) &&
+			!walled(body)
 	}
 	return false
 }
