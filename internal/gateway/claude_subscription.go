@@ -8080,6 +8080,12 @@ func relayFailing(w http.ResponseWriter, r *http.Request, from provider.Protocol
 			begin()
 		}
 		sw := newSSEWriter(w)
+		// Google's streamGenerateContent streams an array unless it is
+		// asked alt=sse; a client calling the REST API directly reads the
+		// array (#7297)
+		if from == provider.Gemini && r.URL.Query().Get("alt") != "sse" {
+			sw.array = true
+		}
 		enc := encoder(from, sw, req, usage)
 		var failed, said, stop string
 		see := func(ev Event) {
@@ -8124,6 +8130,7 @@ func relayFailing(w http.ResponseWriter, r *http.Request, from provider.Protocol
 		// an error event already ended the reply in the client's protocol
 		if failed == "" {
 			enc.finish()
+			sw.end()
 		}
 		return 200, failed
 	}

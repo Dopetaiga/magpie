@@ -454,6 +454,12 @@ func (c *continuation) unecho(s string) string {
 // client's own protocol, as it used to.
 func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p provider.Provider, from, to provider.Protocol, request *Request, model string, zen *zenReply, u *Usage) (int, string) {
 	sw := newSSEWriter(w)
+	// Google's streamGenerateContent streams an array unless it is asked
+	// alt=sse; a client calling the REST API directly reads the array
+	// (#7297)
+	if from == provider.Gemini && r.URL.Query().Get("alt") != "sse" {
+		sw.array = true
+	}
 	enc := encoder(from, sw, request, u)
 	cont := &continuation{mode: prefillHow(p, to, model)}
 	if !s.fits(p.ID, prefillRefused(model), to) {
@@ -788,6 +794,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				zen.end(enc.event)
 			}
 			enc.finish()
+			sw.end()
 			return 200, ""
 		}
 		// an error the client already has ends the reply: nothing of it

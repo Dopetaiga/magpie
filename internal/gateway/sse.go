@@ -64,12 +64,16 @@ func readSSEAlive(r io.Reader, fn func(event, data string) error, alive func()) 
 	return sc.Err()
 }
 
-// sseWriter writes events to a client and flushes each one.
+// sseWriter writes events to a client and flushes each one. In array
+// mode it writes Google's alt=json stream instead: one JSON array of the
+// events, element by element (#7297).
 type sseWriter struct {
 	w     http.ResponseWriter
 	f     http.Flusher
 	begun bool
 	wrote time.Time // when the client was last written to
+	array bool
+	elems int
 }
 
 func newSSEWriter(w http.ResponseWriter) *sseWriter {
@@ -83,6 +87,15 @@ func (s *sseWriter) begin() {
 	}
 	s.begun = true
 	h := s.w.Header()
+	if s.array {
+		h.Set("Content-Type", "application/json; charset=utf-8")
+		h.Set("Cache-Control", "no-cache")
+		s.w.WriteHeader(http.StatusOK)
+		io.WriteString(s.w, "[")
+		s.flush()
+		s.wrote = time.Now()
+		return
+	}
 	h.Set("Content-Type", "text/event-stream; charset=utf-8")
 	h.Set("Cache-Control", "no-cache")
 	if h.Get("Connection") == "" { // a handed-off gateway's close stays (closesWhenHandedOff)
@@ -90,6 +103,16 @@ func (s *sseWriter) begin() {
 	}
 	h.Set("X-Accel-Buffering", "no")
 	s.w.WriteHeader(http.StatusOK)
+	s.flush()
+	s.wrote = time.Now()
+}
+
+// end closes an array stream's array; an event stream needs nothing.
+func (s *sseWriter) end() {
+	if !s.array || !s.begun {
+		return
+	}
+	io.WriteString(s.w, "]\r\n")
 	s.flush()
 	s.wrote = time.Now()
 }
@@ -112,8 +135,12 @@ func (s *sseWriter) quiet() time.Duration {
 // comment writes an SSE comment, which every event stream reader skips:
 // no event, only the news that the stream is alive. No blank line after
 // it: openai-go v2 (Crush) reads a blank line as an event even with no
-// data, and fails on it ("unexpected end of JSON input").
+// data, and fails on it ("unexpected end of JSON input"). An array has
+// no place for one, and is kept alive by its elements.
 func (s *sseWriter) comment(text string) {
+	if s.array {
+		return
+	}
 	s.begin()
 	io.WriteString(s.w, ": "+text+"\n")
 	s.flush()
@@ -124,6 +151,25 @@ func (s *sseWriter) comment(text string) {
 func (s *sseWriter) event(name string, v any) {
 	s.begin()
 	var b bytes.Buffer
+	if s.array {
+		switch x := v.(type) {
+		case []byte:
+			b.Write(x)
+		case json.RawMessage:
+			b.Write(x)
+		default:
+			j, _ := json.Marshal(x)
+			b.Write(j)
+		}
+		if s.elems > 0 {
+			s.w.Write([]byte(",\r\n"))
+		}
+		s.w.Write(b.Bytes())
+		s.elems++
+		s.flush()
+		s.wrote = time.Now()
+		return
+	}
 	if name != "" {
 		b.WriteString("event: ")
 		b.WriteString(name)
